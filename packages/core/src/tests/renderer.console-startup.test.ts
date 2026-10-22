@@ -275,6 +275,61 @@ test("CliRenderer ignores a size-unchanged resize signal without an intermediate
   }
 })
 
+test("CliRenderer repaints when a terminal resize signal reports the current size", async () => {
+  const clock = new ManualClock()
+  const result = await createTestRenderer({ width: 80, height: 24, clock, screenMode: "alternate-screen" })
+  renderer = result.renderer
+  await result.renderOnce()
+
+  const render = spyOn(renderer.nativeScene, "commit")
+  const requestRender = spyOn(renderer, "requestRender")
+  try {
+    const stdout = renderer.stdout as unknown as { columns?: number; rows?: number }
+    stdout.columns = 80
+    stdout.rows = 24
+    // A signal can arrive after a resize round-trip that ended at the previous size,
+    // e.g. leaving fullscreen on Windows. The terminal has already reflowed its cells.
+    ;(renderer as unknown as { sigwinchHandler(): void }).sigwinchHandler()
+    clock.advance(100)
+
+    expect(requestRender).toHaveBeenCalledTimes(1)
+    await result.renderOnce()
+    expect(render.mock.calls.at(-1)?.[0]).toBe(true)
+    expect([renderer.width, renderer.height]).toEqual([80, 24])
+  } finally {
+    render.mockRestore()
+    requestRender.mockRestore()
+  }
+})
+
+test("CliRenderer re-samples the terminal size after the resize debounce", async () => {
+  const clock = new ManualClock()
+  const result = await createTestRenderer({ width: 80, height: 24, clock, screenMode: "alternate-screen" })
+  renderer = result.renderer
+
+  const stdout = renderer.stdout as unknown as {
+    columns: number
+    rows: number
+    _refreshSize?: () => void
+  }
+  // The signal is delivered before the host applies the new grid, so the cached
+  // size still reports the previous geometry.
+  stdout.columns = 80
+  stdout.rows = 24
+  stdout._refreshSize = () => {
+    stdout.columns = 100
+    stdout.rows = 30
+  }
+
+  try {
+    ;(renderer as unknown as { sigwinchHandler(): void }).sigwinchHandler()
+    clock.advance(100)
+    expect([renderer.width, renderer.height]).toEqual([100, 30])
+  } finally {
+    delete stdout._refreshSize
+  }
+})
+
 test("CliRenderer consumes a pending debounced resize when split-footer resizes immediately", async () => {
   const clock = new ManualClock()
   const result = await createTestRenderer({ width: 80, height: 24, clock, screenMode: "alternate-screen" })
